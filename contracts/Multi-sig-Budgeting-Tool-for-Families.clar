@@ -9,6 +9,9 @@
 (define-constant ERR-ALLOWANCE-NOT-FOUND (err u108))
 (define-constant ERR-ALLOWANCE-NOT-READY (err u109))
 (define-constant ERR-ALLOWANCE-ALREADY-EXISTS (err u110))
+(define-constant ERR-CATEGORY-NOT-FOUND (err u111))
+(define-constant ERR-BUDGET-EXCEEDED (err u112))
+(define-constant ERR-CATEGORY-ALREADY-EXISTS (err u113))
 
 (define-data-var required-signatures uint u2)
 (define-data-var proposal-duration uint u144)
@@ -25,6 +28,7 @@
         recipient: principal,
         amount: uint,
         description: (string-ascii 50),
+        category: (string-ascii 20),
         signatures: uint,
         expires-at: uint,
         executed: bool,
@@ -39,6 +43,15 @@
     bool
 )
 (define-data-var proposal-nonce uint u0)
+
+(define-map budget-categories
+    (string-ascii 20)
+    {
+        limit: uint,
+        spent: uint,
+        created-by: principal,
+    }
+)
 
 (define-map recurring-allowances
     principal
@@ -98,6 +111,7 @@
         (recipient principal)
         (amount uint)
         (description (string-ascii 50))
+        (category (string-ascii 20))
     )
     (let (
             (proposal-id (var-get proposal-nonce))
@@ -110,6 +124,7 @@
             recipient: recipient,
             amount: amount,
             description: description,
+            category: category,
             signatures: u0,
             expires-at: expires-at,
             executed: false,
@@ -149,7 +164,12 @@
 )
 
 (define-public (execute-proposal (proposal-id uint))
-    (let ((proposal (unwrap! (map-get? proposals proposal-id) ERR-PROPOSAL-NOT-FOUND)))
+    (let (
+            (proposal (unwrap! (map-get? proposals proposal-id) ERR-PROPOSAL-NOT-FOUND))
+            (category (get category proposal))
+            (amount (get amount proposal))
+            (budget (map-get? budget-categories category))
+        )
         (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
         (asserts! (>= (get signatures proposal) (var-get required-signatures))
             ERR-NOT-AUTHORIZED
@@ -158,7 +178,21 @@
             ERR-PROPOSAL-EXPIRED
         )
         (asserts! (not (get executed proposal)) ERR-PROPOSAL-EXPIRED)
-        (try! (stx-transfer? (get amount proposal) tx-sender (get recipient proposal)))
+        (match budget
+            existing-budget (begin
+                (asserts!
+                    (<= (+ (get spent existing-budget) amount)
+                        (get limit existing-budget)
+                    )
+                    ERR-BUDGET-EXCEEDED
+                )
+                (map-set budget-categories category
+                    (merge existing-budget { spent: (+ (get spent existing-budget) amount) })
+                )
+            )
+            true
+        )
+        (try! (stx-transfer? amount tx-sender (get recipient proposal)))
         (map-set proposals proposal-id (merge proposal { executed: true }))
         (ok true)
     )
@@ -279,6 +313,66 @@
                 (>= burn-block-height next-claim-block)
             )
         )
+        false
+    )
+)
+
+(define-public (create-budget-category
+        (category (string-ascii 20))
+        (limit uint)
+    )
+    (begin
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (> limit u0) ERR-INVALID-AMOUNT)
+        (asserts! (is-none (map-get? budget-categories category))
+            ERR-CATEGORY-ALREADY-EXISTS
+        )
+        (map-set budget-categories category {
+            limit: limit,
+            spent: u0,
+            created-by: tx-sender,
+        })
+        (ok true)
+    )
+)
+
+(define-public (update-budget-limit
+        (category (string-ascii 20))
+        (new-limit uint)
+    )
+    (let ((budget (unwrap! (map-get? budget-categories category) ERR-CATEGORY-NOT-FOUND)))
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (> new-limit u0) ERR-INVALID-AMOUNT)
+        (map-set budget-categories category (merge budget { limit: new-limit }))
+        (ok true)
+    )
+)
+
+(define-public (reset-budget-spending (category (string-ascii 20)))
+    (let ((budget (unwrap! (map-get? budget-categories category) ERR-CATEGORY-NOT-FOUND)))
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set budget-categories category (merge budget { spent: u0 }))
+        (ok true)
+    )
+)
+
+(define-read-only (get-budget-category (category (string-ascii 20)))
+    (map-get? budget-categories category)
+)
+
+(define-read-only (get-budget-remaining (category (string-ascii 20)))
+    (match (map-get? budget-categories category)
+        budget (- (get limit budget) (get spent budget))
+        u0
+    )
+)
+
+(define-read-only (is-budget-exceeded
+        (category (string-ascii 20))
+        (amount uint)
+    )
+    (match (map-get? budget-categories category)
+        budget (> (+ (get spent budget) amount) (get limit budget))
         false
     )
 )
