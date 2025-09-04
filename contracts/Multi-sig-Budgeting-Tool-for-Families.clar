@@ -12,10 +12,12 @@
 (define-constant ERR-CATEGORY-NOT-FOUND (err u111))
 (define-constant ERR-BUDGET-EXCEEDED (err u112))
 (define-constant ERR-CATEGORY-ALREADY-EXISTS (err u113))
+(define-constant ERR-EXPENSE-NOT-FOUND (err u114))
 
 (define-data-var required-signatures uint u2)
 (define-data-var proposal-duration uint u144)
 (define-data-var total-members uint u0)
+(define-data-var expense-nonce uint u0)
 
 (define-map family-members
     principal
@@ -71,6 +73,35 @@
         voter: principal,
     }
     bool
+)
+
+(define-map expense-records
+    uint
+    {
+        spender: principal,
+        amount: uint,
+        category: (string-ascii 20),
+        description: (string-ascii 50),
+        timestamp: uint,
+        approved-by: principal,
+    }
+)
+
+(define-map monthly-spending
+    {
+        member: principal,
+        month: uint,
+        category: (string-ascii 20),
+    }
+    uint
+)
+
+(define-map category-totals
+    {
+        category: (string-ascii 20),
+        month: uint,
+    }
+    uint
 )
 
 (define-public (initialize
@@ -193,6 +224,12 @@
             true
         )
         (try! (stx-transfer? amount tx-sender (get recipient proposal)))
+        (unwrap!
+            (record-expense (get recipient proposal) amount category
+                (get description proposal)
+            )
+            ERR-INVALID-AMOUNT
+        )
         (map-set proposals proposal-id (merge proposal { executed: true }))
         (ok true)
     )
@@ -280,6 +317,12 @@
         (try! (stx-transfer? (get amount allowance) (get created-by allowance)
             tx-sender
         ))
+        (unwrap!
+            (record-expense tx-sender (get amount allowance) "allowance"
+                "Recurring allowance claim"
+            )
+            ERR-INVALID-AMOUNT
+        )
         (map-set recurring-allowances tx-sender
             (merge allowance { last-claimed: current-block })
         )
@@ -374,5 +417,125 @@
     (match (map-get? budget-categories category)
         budget (> (+ (get spent budget) amount) (get limit budget))
         false
+    )
+)
+
+(define-private (record-expense
+        (spender principal)
+        (amount uint)
+        (category (string-ascii 20))
+        (description (string-ascii 50))
+    )
+    (let (
+            (expense-id (var-get expense-nonce))
+            (current-month (/ burn-block-height u4320))
+            (current-spending (default-to u0
+                (map-get? monthly-spending {
+                    member: spender,
+                    month: current-month,
+                    category: category,
+                })
+            ))
+            (current-category-total (default-to u0
+                (map-get? category-totals {
+                    category: category,
+                    month: current-month,
+                })
+            ))
+        )
+        (map-set expense-records expense-id {
+            spender: spender,
+            amount: amount,
+            category: category,
+            description: description,
+            timestamp: burn-block-height,
+            approved-by: tx-sender,
+        })
+        (map-set monthly-spending {
+            member: spender,
+            month: current-month,
+            category: category,
+        }
+            (+ current-spending amount)
+        )
+        (map-set category-totals {
+            category: category,
+            month: current-month,
+        }
+            (+ current-category-total amount)
+        )
+        (var-set expense-nonce (+ expense-id u1))
+        (ok expense-id)
+    )
+)
+
+(define-public (log-manual-expense
+        (amount uint)
+        (category (string-ascii 20))
+        (description (string-ascii 50))
+    )
+    (begin
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (record-expense tx-sender amount category description)
+    )
+)
+
+(define-read-only (get-expense (expense-id uint))
+    (map-get? expense-records expense-id)
+)
+
+(define-read-only (get-member-monthly-spending
+        (member principal)
+        (month uint)
+        (category (string-ascii 20))
+    )
+    (default-to u0
+        (map-get? monthly-spending {
+            member: member,
+            month: month,
+            category: category,
+        })
+    )
+)
+
+(define-read-only (get-category-monthly-total
+        (category (string-ascii 20))
+        (month uint)
+    )
+    (default-to u0
+        (map-get? category-totals {
+            category: category,
+            month: month,
+        })
+    )
+)
+
+(define-read-only (get-current-month)
+    (/ burn-block-height u4320)
+)
+
+(define-read-only (get-total-expenses)
+    (var-get expense-nonce)
+)
+
+(define-read-only (calculate-savings-rate
+        (member principal)
+        (income uint)
+        (month uint)
+    )
+    (let (
+            (food-spending (get-member-monthly-spending member month "food"))
+            (transport-spending (get-member-monthly-spending member month "transport"))
+            (entertainment-spending (get-member-monthly-spending member month "entertainment"))
+            (utilities-spending (get-member-monthly-spending member month "utilities"))
+            (total-spending (+ (+ food-spending transport-spending)
+                (+ entertainment-spending utilities-spending)
+            ))
+        )
+        (if (> income u0)
+            (/ (* (- income total-spending) u100) income)
+            u0
+        )
     )
 )
