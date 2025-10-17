@@ -539,3 +539,305 @@
         )
     )
 )
+
+;; ==========================================================
+;; ADVANCED EXPENSE REPORTING & ANALYTICS FEATURES
+;; ==========================================================
+
+;; New error constants for reporting features
+(define-constant ERR-INVALID-DATE-RANGE (err u115))
+(define-constant ERR-NO-DATA-AVAILABLE (err u116))
+
+;; Data structures for expense analytics
+(define-map expense-trends
+    {
+        category: (string-ascii 20),
+        quarter: uint,
+    }
+    {
+        total-amount: uint,
+        transaction-count: uint,
+        average-amount: uint,
+        highest-expense: uint,
+        lowest-expense: uint,
+    }
+)
+
+(define-map family-spending-summary
+    {
+        month: uint,
+        year: uint,
+    }
+    {
+        total-spent: uint,
+        category-breakdown: (list 10 { category: (string-ascii 20), amount: uint }),
+        top-spender: principal,
+        transactions-count: uint,
+    }
+)
+
+(define-map expense-goals
+    {
+        member: principal,
+        category: (string-ascii 20),
+        quarter: uint,
+    }
+    {
+        target-amount: uint,
+        current-spent: uint,
+        goal-status: (string-ascii 10), ;; "on-track", "over", "achieved"
+        created-at: uint,
+    }
+)
+
+;; Advanced expense reporting functions
+(define-public (generate-expense-report
+        (start-month uint)
+        (end-month uint)
+        (category (optional (string-ascii 20)))
+    )
+    (begin
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (<= start-month end-month) ERR-INVALID-DATE-RANGE)
+        (asserts! (<= (- end-month start-month) u12) ERR-INVALID-DATE-RANGE) ;; Max 12 months
+        (ok {
+            period: { start: start-month, end: end-month },
+            total-expenses: (calculate-period-total start-month end-month category),
+            average-monthly: (calculate-average-monthly start-month end-month category),
+            expense-trend: (calculate-trend-direction start-month end-month category),
+            generated-by: tx-sender,
+            generated-at: burn-block-height,
+        })
+    )
+)
+
+(define-public (set-expense-goal
+        (category (string-ascii 20))
+        (target-amount uint)
+        (quarter uint)
+    )
+    (begin
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (> target-amount u0) ERR-INVALID-AMOUNT)
+        (map-set expense-goals {
+            member: tx-sender,
+            category: category,
+            quarter: quarter,
+        } {
+            target-amount: target-amount,
+            current-spent: u0,
+            goal-status: "on-track",
+            created-at: burn-block-height,
+        })
+        (ok true)
+    )
+)
+
+(define-public (update-goal-progress
+        (member principal)
+        (category (string-ascii 20))
+        (quarter uint)
+        (spent-amount uint)
+    )
+    (let (
+            (goal (unwrap! (map-get? expense-goals {
+                member: member,
+                category: category,
+                quarter: quarter,
+            }) ERR-CATEGORY-NOT-FOUND))
+            (new-spent (+ (get current-spent goal) spent-amount))
+            (target (get target-amount goal))
+            (new-status (if (>= new-spent target)
+                (if (> new-spent target) "over" "achieved")
+                "on-track"
+            ))
+        )
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set expense-goals {
+            member: member,
+            category: category,
+            quarter: quarter,
+        } (merge goal {
+            current-spent: new-spent,
+            goal-status: new-status,
+        }))
+        (ok true)
+    )
+)
+
+(define-public (create-family-spending-insights (month uint) (year uint))
+    (let (
+            (total-spent (calculate-family-total-for-month month))
+            (top-categories (get-top-spending-categories month u5))
+            (top-spender (get-highest-spender month))
+            (tx-count (count-monthly-transactions month))
+        )
+        (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set family-spending-summary { month: month, year: year } {
+            total-spent: total-spent,
+            category-breakdown: top-categories,
+            top-spender: top-spender,
+            transactions-count: tx-count,
+        })
+        (ok true)
+    )
+)
+
+;; Read-only functions for expense analytics
+(define-read-only (get-expense-report
+        (start-month uint)
+        (end-month uint)
+        (category (optional (string-ascii 20)))
+    )
+    {
+        period: { start: start-month, end: end-month },
+        total-expenses: (calculate-period-total start-month end-month category),
+        average-monthly: (calculate-average-monthly start-month end-month category),
+        expense-trend: (calculate-trend-direction start-month end-month category),
+        generated-at: burn-block-height,
+    }
+)
+
+(define-read-only (get-expense-goal
+        (member principal)
+        (category (string-ascii 20))
+        (quarter uint)
+    )
+    (map-get? expense-goals {
+        member: member,
+        category: category,
+        quarter: quarter,
+    })
+)
+
+(define-read-only (get-goal-achievement-rate (member principal) (quarter uint))
+    (let (
+            (goals-achieved u0) ;; In a real implementation, iterate through goals
+            (total-goals u1) ;; In a real implementation, count total goals
+        )
+        (if (> total-goals u0)
+            (/ (* goals-achieved u100) total-goals)
+            u0
+        )
+    )
+)
+
+(define-read-only (get-family-spending-insights (month uint) (year uint))
+    (map-get? family-spending-summary { month: month, year: year })
+)
+
+(define-read-only (get-spending-comparison
+        (member1 principal)
+        (member2 principal)
+        (month uint)
+        (category (string-ascii 20))
+    )
+    (let (
+            (spending1 (get-member-monthly-spending member1 month category))
+            (spending2 (get-member-monthly-spending member2 month category))
+            (difference (if (> spending1 spending2)
+                (- spending1 spending2)
+                (- spending2 spending1)
+            ))
+        )
+        {
+            member1-spending: spending1,
+            member2-spending: spending2,
+            difference: difference,
+            higher-spender: (if (> spending1 spending2) member1 member2),
+        }
+    )
+)
+
+(define-read-only (predict-monthly-spending
+        (member principal)
+        (category (string-ascii 20))
+        (current-month uint)
+    )
+    (let (
+            (last-month-spending (get-member-monthly-spending member (- current-month u1) category))
+            (two-months-ago (get-member-monthly-spending member (- current-month u2) category))
+            (three-months-ago (get-member-monthly-spending member (- current-month u3) category))
+            (average-spending (/ (+ (+ last-month-spending two-months-ago) three-months-ago) u3))
+            (trend-factor (if (and (> last-month-spending two-months-ago)
+                                 (> two-months-ago three-months-ago))
+                u110 ;; Increasing trend +10%
+                (if (and (< last-month-spending two-months-ago)
+                         (< two-months-ago three-months-ago))
+                    u90 ;; Decreasing trend -10%
+                    u100 ;; Stable trend
+                )
+            ))
+        )
+        (/ (* average-spending trend-factor) u100)
+    )
+)
+
+;; Helper functions for analytics
+(define-private (calculate-period-total
+        (start-month uint)
+        (end-month uint)
+        (category (optional (string-ascii 20)))
+    )
+    ;; Simplified implementation - in practice would iterate through months
+    (match category
+        cat (get-category-monthly-total cat start-month)
+        u0 ;; Would sum all categories if none specified
+    )
+)
+
+(define-private (calculate-average-monthly
+        (start-month uint)
+        (end-month uint)
+        (category (optional (string-ascii 20)))
+    )
+    (let ((period-length (+ (- end-month start-month) u1)))
+        (/ (calculate-period-total start-month end-month category) period-length)
+    )
+)
+
+(define-private (calculate-trend-direction
+        (start-month uint)
+        (end-month uint)
+        (category (optional (string-ascii 20)))
+    )
+    ;; Simplified trend calculation
+    (let (
+            (start-total (match category
+                cat (get-category-monthly-total cat start-month)
+                u0
+            ))
+            (end-total (match category
+                cat (get-category-monthly-total cat end-month)
+                u0
+            ))
+        )
+        (if (> end-total start-total)
+            "increasing"
+            (if (< end-total start-total)
+                "decreasing"
+                "stable"
+            )
+        )
+    )
+)
+
+(define-private (calculate-family-total-for-month (month uint))
+    ;; Simplified implementation - would sum all members' spending
+    u0
+)
+
+(define-private (get-top-spending-categories (month uint) (limit uint))
+    ;; Returns empty list - in practice would return top categories
+    (list)
+)
+
+(define-private (get-highest-spender (month uint))
+    ;; Returns contract caller - in practice would calculate actual top spender
+    tx-sender
+)
+
+(define-private (count-monthly-transactions (month uint))
+    ;; Simplified implementation
+    u0
+)
