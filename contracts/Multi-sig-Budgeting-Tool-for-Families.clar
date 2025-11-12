@@ -570,7 +570,10 @@
     }
     {
         total-spent: uint,
-        category-breakdown: (list 10 { category: (string-ascii 20), amount: uint }),
+        category-breakdown: (list 10 {
+            category: (string-ascii 20),
+            amount: uint,
+        }),
         top-spender: principal,
         transactions-count: uint,
     }
@@ -601,7 +604,10 @@
         (asserts! (<= start-month end-month) ERR-INVALID-DATE-RANGE)
         (asserts! (<= (- end-month start-month) u12) ERR-INVALID-DATE-RANGE) ;; Max 12 months
         (ok {
-            period: { start: start-month, end: end-month },
+            period: {
+                start: start-month,
+                end: end-month,
+            },
             total-expenses: (calculate-period-total start-month end-month category),
             average-monthly: (calculate-average-monthly start-month end-month category),
             expense-trend: (calculate-trend-direction start-month end-month category),
@@ -640,15 +646,21 @@
         (spent-amount uint)
     )
     (let (
-            (goal (unwrap! (map-get? expense-goals {
-                member: member,
-                category: category,
-                quarter: quarter,
-            }) ERR-CATEGORY-NOT-FOUND))
+            (goal (unwrap!
+                (map-get? expense-goals {
+                    member: member,
+                    category: category,
+                    quarter: quarter,
+                })
+                ERR-CATEGORY-NOT-FOUND
+            ))
             (new-spent (+ (get current-spent goal) spent-amount))
             (target (get target-amount goal))
             (new-status (if (>= new-spent target)
-                (if (> new-spent target) "over" "achieved")
+                (if (> new-spent target)
+                    "over"
+                    "achieved"
+                )
                 "on-track"
             ))
         )
@@ -657,15 +669,20 @@
             member: member,
             category: category,
             quarter: quarter,
-        } (merge goal {
-            current-spent: new-spent,
-            goal-status: new-status,
-        }))
+        }
+            (merge goal {
+                current-spent: new-spent,
+                goal-status: new-status,
+            })
+        )
         (ok true)
     )
 )
 
-(define-public (create-family-spending-insights (month uint) (year uint))
+(define-public (create-family-spending-insights
+        (month uint)
+        (year uint)
+    )
     (let (
             (total-spent (calculate-family-total-for-month month))
             (top-categories (get-top-spending-categories month u5))
@@ -673,7 +690,10 @@
             (tx-count (count-monthly-transactions month))
         )
         (asserts! (is-member tx-sender) ERR-NOT-AUTHORIZED)
-        (map-set family-spending-summary { month: month, year: year } {
+        (map-set family-spending-summary {
+            month: month,
+            year: year,
+        } {
             total-spent: total-spent,
             category-breakdown: top-categories,
             top-spender: top-spender,
@@ -690,7 +710,10 @@
         (category (optional (string-ascii 20)))
     )
     {
-        period: { start: start-month, end: end-month },
+        period: {
+            start: start-month,
+            end: end-month,
+        },
         total-expenses: (calculate-period-total start-month end-month category),
         average-monthly: (calculate-average-monthly start-month end-month category),
         expense-trend: (calculate-trend-direction start-month end-month category),
@@ -710,7 +733,10 @@
     })
 )
 
-(define-read-only (get-goal-achievement-rate (member principal) (quarter uint))
+(define-read-only (get-goal-achievement-rate
+        (member principal)
+        (quarter uint)
+    )
     (let (
             (goals-achieved u0) ;; In a real implementation, iterate through goals
             (total-goals u1) ;; In a real implementation, count total goals
@@ -722,8 +748,14 @@
     )
 )
 
-(define-read-only (get-family-spending-insights (month uint) (year uint))
-    (map-get? family-spending-summary { month: month, year: year })
+(define-read-only (get-family-spending-insights
+        (month uint)
+        (year uint)
+    )
+    (map-get? family-spending-summary {
+        month: month,
+        year: year,
+    })
 )
 
 (define-read-only (get-spending-comparison
@@ -744,7 +776,10 @@
             member1-spending: spending1,
             member2-spending: spending2,
             difference: difference,
-            higher-spender: (if (> spending1 spending2) member1 member2),
+            higher-spender: (if (> spending1 spending2)
+                member1
+                member2
+            ),
         }
     )
 )
@@ -759,11 +794,15 @@
             (two-months-ago (get-member-monthly-spending member (- current-month u2) category))
             (three-months-ago (get-member-monthly-spending member (- current-month u3) category))
             (average-spending (/ (+ (+ last-month-spending two-months-ago) three-months-ago) u3))
-            (trend-factor (if (and (> last-month-spending two-months-ago)
-                                 (> two-months-ago three-months-ago))
+            (trend-factor (if (and
+                    (> last-month-spending two-months-ago)
+                    (> two-months-ago three-months-ago)
+                )
                 u110 ;; Increasing trend +10%
-                (if (and (< last-month-spending two-months-ago)
-                         (< two-months-ago three-months-ago))
+                (if (and
+                        (< last-month-spending two-months-ago)
+                        (< two-months-ago three-months-ago)
+                    )
                     u90 ;; Decreasing trend -10%
                     u100 ;; Stable trend
                 )
@@ -781,7 +820,8 @@
     )
     ;; Simplified implementation - in practice would iterate through months
     (match category
-        cat (get-category-monthly-total cat start-month)
+        cat
+        (get-category-monthly-total cat start-month)
         u0 ;; Would sum all categories if none specified
     )
 )
@@ -827,7 +867,10 @@
     u0
 )
 
-(define-private (get-top-spending-categories (month uint) (limit uint))
+(define-private (get-top-spending-categories
+        (month uint)
+        (limit uint)
+    )
     ;; Returns empty list - in practice would return top categories
     (list)
 )
@@ -838,6 +881,38 @@
 )
 
 (define-private (count-monthly-transactions (month uint))
-    ;; Simplified implementation
     u0
+)
+
+(define-map member-profiles
+    { owner: principal }
+    { nick: (string-utf8 32) }
+)
+
+(define-constant nickname-min-len u1)
+(define-constant err-nickname-too-short (err u117))
+
+(define-public (set-nickname (new-nickname (string-utf8 32)))
+    (let (
+            (caller tx-sender)
+            (provided new-nickname)
+            (provided-len (len provided))
+        )
+        (if (not (>= provided-len nickname-min-len))
+            err-nickname-too-short
+            (begin
+                (map-set member-profiles { owner: caller } { nick: provided })
+                (ok true)
+            )
+        )
+    )
+)
+
+(define-read-only (get-nickname (profile-owner principal))
+    (let ((entry (map-get? member-profiles { owner: profile-owner })))
+        (match entry
+            profile (some (get nick profile))
+            none
+        )
+    )
 )
